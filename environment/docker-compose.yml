@@ -1,0 +1,22 @@
+services:
+  php:
+    build: .
+    volumes:
+      - ./www:/var/www/html
+    networks:
+      - php2shell
+
+  nginx:
+    image: nginx:1.25-bookworm
+    ports:
+      - "8080:80"
+    volumes:
+      - ./www:/var/www/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - php
+    networks:
+      - php2shell
+
+networks:
+  php2shell:

