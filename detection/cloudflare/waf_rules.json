@@ -1,0 +1,37 @@
+{
+  "_comment": "PHP2Shell — Cloudflare WAF Custom Rules (import via dashboard or API)",
+  "_reference": "https://github.com/mahumadad/php2shell-analysis",
+  "_cves": ["CVE-2026-109618", "CVE-2026-109619"],
+  "rules": [
+    {
+      "description": "PHP2SHELL CVE-2026-109619 — Block upload_progress exploitation",
+      "expression": "(http.request.method eq \"POST\" and http.request.headers[\"content-type\"] contains \"multipart/form-data\" and http.request.body.raw contains \"PHP_SESSION_UPLOAD_PROGRESS\")",
+      "action": "block",
+      "enabled": true
+    },
+    {
+      "description": "PHP2SHELL CVE-2026-109619 — Block PHP code in multipart upload",
+      "expression": "(http.request.method eq \"POST\" and http.request.headers[\"content-type\"] contains \"multipart/form-data\" and (http.request.body.raw contains \"<?php\" or http.request.body.raw contains \"<?=\"))",
+      "action": "block",
+      "enabled": true
+    },
+    {
+      "description": "PHP2SHELL CVE-2026-109618 — Block serialized PHP objects with pipe prefix",
+      "expression": "(http.request.method eq \"POST\" and http.request.body.raw contains \"|O:\" and http.request.uri.path contains \".php\")",
+      "action": "block",
+      "enabled": true
+    },
+    {
+      "description": "PHP2SHELL CVE-2026-109618 — Block known POP gadget classes",
+      "expression": "(http.request.method eq \"POST\" and (http.request.body.raw contains \"Monolog\\\\Handler\" or http.request.body.raw contains \"Guzzle\\\\\" or http.request.body.raw contains \"Illuminate\\\\Pending\" or http.request.body.raw contains \"Symfony\\\\Component\\\\Process\"))",
+      "action": "block",
+      "enabled": true
+    },
+    {
+      "description": "PHP2SHELL — Block session file LFI attempts",
+      "expression": "(http.request.uri.query contains \"/var/lib/php/sessions/sess_\" or http.request.uri.query contains \"/tmp/sess_\" or http.request.body.raw contains \"/var/lib/php/sessions/sess_\")",
+      "action": "block",
+      "enabled": true
+    }
+  ]
+}

@@ -1,6 +1,8 @@
-# PHP2Shell — CVE-2026-109618 / CVE-2026-109619
+# PHP2Shell — CVE-2026-109618 / CVE-2026-109619 — RCE Exploit PoC + Detection Rules
 
-Independent analysis, exploitation PoCs, and defensive tooling for two critical pre-auth RCE vulnerabilities in PHP core's session handling.
+Working RCE exploit, full technical analysis, IDS/WAF detection rules, and a Docker lab for two critical pre-auth vulnerabilities in PHP's session handling.  Covers **all 5 attack chains** including the **serializer mismatch → POP chain** (the only public exploit for CVE-2026-109618 that does NOT require `upload_progress`).
+
+**Keywords:** php2shell, php rce, php session exploit, php upload_progress, php serializer mismatch, php pop chain, php deserialization, suricata rules, modsecurity rules, waf bypass, php heap uaf, php session injection
 
 **CVSS v4.0: 9.2 (Critical)** — Pre-auth, no user interaction, arbitrary code execution.
 
@@ -148,7 +150,57 @@ session.use_only_cookies = On
 
 Upgrade to PHP **8.2.35**, **8.3.36**, **8.4.27**, or **8.5.12** (released 2026-10-21).
 
-## Defensive Tooling
+## Detection Rules (IDS / WAF / SIEM)
+
+Drop-in rules for the most common security stacks.  Cover **both CVEs** and all 5 attack chains — including serializer mismatch POP chain patterns that other rulesets miss.
+
+### Suricata / Snort
+
+```bash
+cp detection/suricata/php2shell.rules /etc/suricata/rules/
+# Add to suricata.yaml → rule-files:
+#   - php2shell.rules
+suricatasc -c reload-rules
+```
+
+18 signatures (SID 2026100–2026117): upload_progress trigger, PHP code in upload filename, session fixation via POST, heap spray arrays, pipe-prefixed serialized objects, known POP gadget classes (Monolog, Guzzle, Laravel, Symfony), shell functions in serialized data, session file LFI.
+
+### ModSecurity (v2/v3)
+
+```bash
+cp detection/modsecurity/php2shell.conf /etc/modsecurity/conf.d/
+# Or include from modsecurity.conf:
+#   Include /etc/modsecurity/conf.d/php2shell.conf
+```
+
+12 rules (ID 9502100–9502117): covers the same attack surface plus array field flood detection for heap spray attempts.
+
+### Sigma (SIEM)
+
+```
+detection/sigma/php2shell_exploit.yml
+```
+
+3 detection rules for web server logs and file events: exploitation attempts, repeated FPM worker crashes (≥3 in 5min), and `.user.ini` serializer override creation.  Compatible with Splunk, Elastic, QRadar, Sentinel via [sigma-cli](https://github.com/SigmaHQ/sigma-cli).
+
+### Cloudflare WAF
+
+```
+detection/cloudflare/waf_rules.json
+```
+
+5 custom rules importable via Cloudflare dashboard or API.  Block upload_progress exploitation, PHP code in uploads, serialized object injection, known POP gadgets, and session file LFI.
+
+### nginx
+
+```bash
+cp detection/nginx/block_php2shell.conf /etc/nginx/conf.d/
+# Include in server {} block:
+#   include /etc/nginx/conf.d/block_php2shell.conf;
+nginx -t && nginx -s reload
+```
+
+Hardening config: enforce `fastcgi_request_buffering on`, block session file LFI paths, block `.user.ini` access, rate-limit multipart uploads to PHP.
 
 ### Check if your server is mitigated
 
@@ -156,6 +208,8 @@ Upgrade to PHP **8.2.35**, **8.3.36**, **8.4.27**, or **8.5.12** (released 2026-
 chmod +x mitigation/check_mitigation.sh
 sudo ./mitigation/check_mitigation.sh
 ```
+
+Audits all PHP binaries (system, LiteSpeed, cPanel EA4, Sury): patch status, `upload_progress` config, INI scope, guard extension, `use_strict_mode`, per-directory serializer mismatch, `.user.ini`/`.htaccess` overrides.
 
 ### Crash detection (legacy — use exploit_cve_2026_109619.py --mode detect instead)
 
@@ -176,6 +230,13 @@ environment/
   Dockerfile                  — PHP 8.1-fpm vulnerable build
   nginx/default.conf          — fastcgi_request_buffering off
   www/                        — Vulnerable application with gadget classes
+
+detection/
+  suricata/php2shell.rules    — 18 Suricata/Snort IDS signatures
+  modsecurity/php2shell.conf  — 12 ModSecurity WAF rules (v2/v3)
+  sigma/php2shell_exploit.yml — 3 Sigma SIEM detection rules
+  cloudflare/waf_rules.json   — 5 Cloudflare WAF custom rules
+  nginx/block_php2shell.conf  — nginx hardening config
 
 docs/
   ANALYSIS.md                 — Full technical deep-dive (vulnerability mechanics,

@@ -1,0 +1,78 @@
+# PHP2Shell — Suricata/Snort IDS Rules
+# CVE-2026-109618 / CVE-2026-109619
+#
+# Drop-in: copy to /etc/suricata/rules/ and add to suricata.yaml rule-files
+# Tested on Suricata 7.x / Snort 3.x
+#
+# SID range: 2026100 – 2026119 (reserved for this ruleset)
+
+# ============================================================================
+# CVE-2026-109619 — Upload Progress UAF
+# Detect session.upload_progress exploitation attempts
+# ============================================================================
+
+# 1. PHP_SESSION_UPLOAD_PROGRESS in multipart POST body
+#    The upload_progress handler activates when the POST body contains a field
+#    matching session.upload_progress.name (default: PHP_SESSION_UPLOAD_PROGRESS).
+#    Combined with a large/slow upload, this triggers the UAF.
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — upload_progress field in multipart POST"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.request_body; content:"PHP_SESSION_UPLOAD_PROGRESS"; nocase; classtype:web-application-attack; sid:2026100; rev:1; metadata:cve CVE-2026-109619, severity critical;)
+
+# 2. Slow multipart upload with session cookie (timing-based trigger)
+#    Detects multipart uploads to PHP endpoints with an active session —
+#    the precondition for the UAF (the upload must be slow enough for
+#    php_session_rfc1867_update to fire multiple times).
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — multipart upload to PHP with session"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.cookie; content:"PHPSESSID="; http.uri; content:".php"; classtype:web-application-attack; sid:2026101; rev:1; metadata:cve CVE-2026-109619, severity high;)
+
+# 3. Session file injection via upload filename
+#    Detect PHP code in Content-Disposition filename — the session file
+#    injection chain writes the raw filename into the session file.
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — PHP code in upload filename (session injection)"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.request_body; content:"filename="; content:"<?php"; distance:0; within:200; classtype:web-application-attack; sid:2026102; rev:1; metadata:cve CVE-2026-109619, severity critical;)
+
+# 4. Short-form PHP tag in filename
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — short PHP tag in upload filename"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.request_body; content:"filename="; content:"<?="; distance:0; within:200; classtype:web-application-attack; sid:2026103; rev:1; metadata:cve CVE-2026-109619, severity critical;)
+
+# 5. Session fixation via POST body (chain 5)
+#    upload_progress reads the session ID from a POST field named after
+#    session.name, bypassing use_only_cookies. Detect PHPSESSID as a
+#    form field name (not cookie) in multipart body.
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — session fixation via POST field"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.request_body; content:"name=|22|PHPSESSID|22|"; nocase; classtype:web-application-attack; sid:2026104; rev:1; metadata:cve CVE-2026-109619, severity high;)
+
+# 6. Heap spray pattern — many identically-named array fields
+#    The heap feng shui technique uses ~149 form fields named t[] to
+#    reclaim freed HashTable chunks.
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109619 — heap spray array fields in multipart"; flow:to_server,established; http.method; content:"POST"; http.content_type; content:"multipart/form-data"; http.request_body; content:"name=|22|t[]|22|"; content:"name=|22|t[]|22|"; distance:0; content:"name=|22|t[]|22|"; distance:0; classtype:web-application-attack; sid:2026105; rev:1; metadata:cve CVE-2026-109619, severity high;)
+
+# ============================================================================
+# CVE-2026-109618 — Serializer Mismatch → POP Chain
+# Detect serialized PHP objects in POST data targeting session endpoints
+# ============================================================================
+
+# 7. Serialized PHP object in POST body (POP chain injection)
+#    The serializer mismatch attack writes serialized objects via a
+#    php_serialize endpoint. Detect O:<len>:"ClassName" pattern in POST data.
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — serialized PHP object in POST body"; flow:to_server,established; http.method; content:"POST"; http.request_body; content:"|7c|O:"; content:"|22|"; distance:0; within:30; http.uri; content:".php"; classtype:web-application-attack; sid:2026110; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# 8. Known POP gadget: Monolog/Handler
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — Monolog POP gadget in POST"; flow:to_server,established; http.method; content:"POST"; http.request_body; content:"Monolog"; content:"Handler"; distance:0; within:60; classtype:web-application-attack; sid:2026111; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# 9. Known POP gadget: Guzzle/FnStream or Guzzle/LazyOpenStream
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — Guzzle POP gadget in POST"; flow:to_server,established; http.method; content:"POST"; http.request_body; content:"Guzzle"; content:"Stream"; distance:0; within:60; classtype:web-application-attack; sid:2026112; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# 10. Known POP gadget: Laravel PendingCommand / PendingBroadcast
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — Laravel POP gadget in POST"; flow:to_server,established; http.method; content:"POST"; http.request_body; content:"Illuminate"; content:"Pending"; distance:0; within:80; classtype:web-application-attack; sid:2026113; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# 11. Known POP gadget: Symfony Process
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — Symfony Process POP gadget in POST"; flow:to_server,established; http.method; content:"POST"; http.request_body; content:"Symfony"; content:"Process"; distance:0; within:80; classtype:web-application-attack; sid:2026114; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# 12. shell_exec / system / passthru / exec in serialized object
+alert http any any -> any any (msg:"PHP2SHELL CVE-2026-109618 — shell command in serialized object"; flow:to_server,established; http.method; content:"POST"; http.request_body; pcre:"/O:\d+:\"[^\"]+\".*?(shell_exec|system|passthru|proc_open|popen|exec)\b/sR"; classtype:web-application-attack; sid:2026115; rev:1; metadata:cve CVE-2026-109618, severity critical;)
+
+# ============================================================================
+# Generic — Post-exploitation / session file LFI
+# ============================================================================
+
+# 13. LFI targeting PHP session files
+alert http any any -> any any (msg:"PHP2SHELL — LFI targeting session file path"; flow:to_server,established; http.uri; pcre:"/[?&][^=]+=.*?(\/var\/lib\/php\/sessions\/sess_|\/tmp\/sess_)/i"; classtype:web-application-attack; sid:2026116; rev:1; metadata:cve CVE-2026-109619, severity critical;)
+
+# 14. PHP session file path in POST body (for POST-based LFI)
+alert http any any -> any any (msg:"PHP2SHELL — session file path in POST body"; flow:to_server,established; http.method; content:"POST"; http.request_body; pcre:"/(\/var\/lib\/php\/sessions\/sess_|\/tmp\/sess_)/"; classtype:web-application-attack; sid:2026117; rev:1; metadata:cve CVE-2026-109619, severity high;)
